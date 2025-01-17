@@ -1,0 +1,32 @@
+[package]
+name = "rustpjm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.12.8", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
+tokio = { version = "1", features = ["full"] }
+polars = { version = "0.45.1", features = ["json", "temporal", "timezones","dtype-datetime", "strings", "dtype-date","lazy","parquet", "simd", "performant", "azure", "dtype-u8","offset_by", "is_in"]}
+polars-core = { version = "0.45.1" }
+polars-io = {version="0.45.1"}
+polars-plan = {version="0.45.1", features=["range", "random","list_sample"]}
+polars-time= { version="0.45.1"}
+axum = { version = "0.7.9", features = ["macros"]}
+serde="*"
+serde_json="*"
+log="0.4.22"
+jemallocator = { version = "*" }
+object_store = {version="0.11.1", features = ["azure"]}
+azure_storage = { version = "0.21.0"}
+azure_storage_queues = { version = "0.21.0"}
+azure_core = { version = "0.21.0"}
+futures="0.3"
+base64="0.22.1"
+chrono="0.4.39"
+chrono-tz="0.6"
+num-integer="0.1.46"
+paste="1.0.15"
+syn = "2.0.94"
+uuid = {version="1.11.0", features = ["v4", "fast-rng"]}
+sqlx = {version="0.8.3", features = ["postgres","runtime-tokio","tls-native-tls"]}
+openssl = {version="0.10.68", features = ["vendored"]}
