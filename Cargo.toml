@@ -6,11 +6,9 @@ edition = "2021"
 [dependencies]
 reqwest = { version = "0.12.8", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
 tokio = { version = "1", features = ["full"] }
-polars = { version = "0.45.1", features = ["json", "temporal", "timezones","dtype-datetime", "strings", "dtype-date","lazy","parquet", "simd", "performant", "azure", "dtype-u8","offset_by", "is_in"]}
-polars-core = { version = "0.45.1" }
-polars-io = {version="0.45.1"}
-polars-plan = {version="0.45.1", features=["range", "random","list_sample"]}
-polars-time= { version="0.45.1"}
+polars = { version = "0.46.0", features = ["json", "temporal", "timezones","dtype-datetime", "strings", "dtype-date","lazy","parquet", "simd", "performant", "azure", "dtype-u8","offset_by", "is_in"]}
+polars-io={ version = "0.46.0"}
+polars-arrow={version="0.46.0"}
 axum = { version = "0.7.9", features = ["macros"]}
 serde="*"
 serde_json="*"

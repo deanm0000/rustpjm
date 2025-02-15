@@ -11,12 +11,9 @@ use reqwest::{header::HeaderValue, Client};
 use serde_json::to_string;
 use std::{borrow::Cow, env};
 
-pub async fn put_to_queue(
-    msg: &InMsg,
-    visibility_timeout_secs: u32,
-) -> Result<(), Errors> {
+pub async fn put_to_queue(msg: &InMsg, visibility_timeout_secs: u32) -> Result<(), Errors> {
     let queue_name = msg.pjm_end_point.url_suffix.replace("_", "");
-    let queue_client=make_queue_client(queue_name.as_str());
+    let queue_client = make_queue_client(queue_name.as_str());
     let msg_json: InMsgJson = msg.into();
     let new_queue_json = match to_string(&msg_json) {
         Ok(new_queue_json) => new_queue_json,
@@ -33,14 +30,15 @@ pub async fn put_to_queue(
         }
     };
 
-    
     let msg_resp = message.into_future().await;
-    if let Err(e)=msg_resp {
-        eprintln!("{:?} {} queue error {}", msg.begin_time, msg.pjm_end_point.url_suffix,e);
+    if let Err(e) = msg_resp {
+        eprintln!(
+            "{:?} {} queue error {}",
+            msg.begin_time, msg.pjm_end_point.url_suffix, e
+        );
         if let Ok(poo) = queue_client.url() {
-            eprintln!("{}",poo);
+            eprintln!("{}", poo);
         }
-        
     }
     //TODO, make sure this works.// if let Ok(queue_res) = queue_client.put_message(new_queue_b64).into_future().await {
     //     eprintln!("{:?}", queue_res);

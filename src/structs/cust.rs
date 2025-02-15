@@ -121,7 +121,6 @@ impl TryInto<InMsg> for Value {
     }
 }
 
-
 impl From<&InMsg> for InMsgJson {
     fn from(val: &InMsg) -> Self {
         let beg_str = val.begin_time.format("%Y-%m-%dT%H:%M:%S%z").to_string();

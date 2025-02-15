@@ -30,6 +30,7 @@ async fn queue_trigger(
             return Err(Errors::HashMapkey);
         }
     };
+    eprintln!("{:?}", val);
     let in_msg: Result<InMsg, Errors> = val.clone().try_into();
 
     let res = match in_msg {
@@ -38,14 +39,13 @@ async fn queue_trigger(
             match next_time {
                 Ok(next_time) => {
                     if in_msg.queue_next {
-                        
                         let new_queue_item = &InMsg {
                             begin_time: next_time,
                             pjm_end_point: in_msg.pjm_end_point.clone(),
                             queue_next: true,
                         };
                         let when_next_expected = in_msg.pjm_end_point.expected(next_time);
-                        put_to_queue( new_queue_item, when_next_expected).await?;
+                        put_to_queue(new_queue_item, when_next_expected).await?;
                     };
                 }
                 Err(Errors::PJM0Rows) => {
@@ -55,7 +55,7 @@ async fn queue_trigger(
                         "got 0 rows will add new item to queue in {} sec",
                         when_next_res
                     );
-                    put_to_queue( &in_msg, when_next_res).await?;
+                    put_to_queue(&in_msg, when_next_res).await?;
                 }
                 Err(e) => {
                     eprintln!("{:?}", e);
@@ -76,8 +76,8 @@ async fn queue_trigger(
     let rt_to_da: Result<RtToDa, Errors> = val.clone().try_into();
 
     match rt_to_da {
-        Ok(rt_to_da)=>parse_rt_to_da_starter(rt_to_da, Arc::clone(state)).await,
-        Err(e)=>Err(e)
+        Ok(rt_to_da) => parse_rt_to_da_starter(rt_to_da, Arc::clone(state)).await,
+        Err(e) => Err(e),
     }
 
     // let timer_msg: Result<TimerMsg, Errors> = val.clone().try_into();
@@ -90,7 +90,6 @@ async fn queue_trigger(
     //         a},
     //     Err(e) => Err(e),
     // };
-
 }
 
 pub async fn queue_trigger_wrapper(

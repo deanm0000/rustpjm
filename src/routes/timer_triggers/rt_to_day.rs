@@ -10,12 +10,11 @@ use object_store::ObjectStore;
 use polars::prelude::ScanArgsParquet;
 use polars::prelude::*;
 use std::collections::HashSet;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use tokio::task;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use std::panic::{self, AssertUnwindSafe};
-
 
 pub async fn parse_rt_to_da_starter(
     rt_to_da: RtToDa,
@@ -23,13 +22,9 @@ pub async fn parse_rt_to_da_starter(
 ) -> Result<StatusCode, Errors> {
     tokio::spawn(parse_rt_to_da_wrapper(rt_to_da, state));
     Ok(StatusCode::OK)
-
 }
 
-async fn parse_rt_to_da_wrapper(
-    rt_to_da: RtToDa,
-    state: Arc<AppState>,
-) {
+async fn parse_rt_to_da_wrapper(rt_to_da: RtToDa, state: Arc<AppState>) {
     let endpoint = rt_to_da.endpoint.clone();
     // let pjm_end_point: PJMEndPoint = rt_to_da.endpoint.as_str().try_into()?;
 
@@ -46,11 +41,11 @@ async fn parse_rt_to_da_wrapper(
     };
 
     if is_working {
-        return
+        return;
     };
     let _ = panic::catch_unwind(AssertUnwindSafe(|| async {
-    parse_rt_to_da(rt_to_da, &state).await
-}));
+        parse_rt_to_da(rt_to_da, &state).await
+    }));
     {
         let mut combines_add_when_done = state.combines_add_when_done.lock().await;
         let mut item_to_queue: Option<RtToDa> = None;
@@ -64,7 +59,6 @@ async fn parse_rt_to_da_wrapper(
             combines_add_when_done.remove(&item);
         }
     };
-
 }
 
 async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
@@ -75,7 +69,10 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
     let pricedate = NaiveDate::parse_from_str(pricedate_str, "%Y-%m-%d").unwrap();
 
     eprintln!("scanning files in {}", &dir);
-    let args = ScanArgsParquet { include_file_paths: Some("file_path".into()), ..Default::default() };
+    let args = ScanArgsParquet {
+        include_file_paths: Some("file_path".into()),
+        ..Default::default()
+    };
     let new_df = tokio::task::spawn_blocking(move || {
         LazyFrame::scan_parquet(dir, args)
             .unwrap()
@@ -85,7 +82,9 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
     })
     .await
     .unwrap();
-    if new_df.shape().0==0 {return}
+    if new_df.shape().0 == 0 {
+        return;
+    }
     eprintln!("making files column");
     let files = new_df.column("file_path").unwrap();
     let files = files.str().unwrap().unique().unwrap();
@@ -95,22 +94,32 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
     eprintln!("have {} df partitions", &new_dfs.len());
     let schema = new_df.schema();
     eprintln!("pricedate is {}", &pricedate_str);
-    let existing_file = format!("abfs://pjm/apidata/{}/Day{}.parquet", endpoint, pricedate_str);
-    let write_to_str = format!("apidata/{}/_processing/Day{}.parquet", endpoint.as_str(), pricedate_str);
+    let existing_file = format!(
+        "abfs://pjm/apidata/{}/Day{}.parquet",
+        endpoint, pricedate_str
+    );
+    let write_to_str = format!(
+        "apidata/{}/_processing/Day{}.parquet",
+        endpoint.as_str(),
+        pricedate_str
+    );
     let mut existing_nodes = get_nodes(existing_file.as_str()).await;
     let existing_lf = match existing_nodes.len() {
-        0=> DataFrame::empty_with_schema(&schema).lazy(),
+        0 => DataFrame::empty_with_schema(&schema).lazy(),
         _ => {
-            let lf =tokio::task::spawn_blocking(move || {
+            let lf = tokio::task::spawn_blocking(move || {
                 LazyFrame::scan_parquet(existing_file.clone(), ScanArgsParquet::default()).unwrap()
             })
             .await
             .unwrap();
-            eprintln!("have {} existing nodes and existing lf", &existing_nodes.len());
+            eprintln!(
+                "have {} existing nodes and existing lf",
+                &existing_nodes.len()
+            );
             lf
         }
     };
-    
+
     let write_to_path = Path::from(write_to_str.clone());
     let object_store = Arc::clone(&state.object_store);
     let cloud_writer = CloudWriter::new_with_object_store(object_store, write_to_path.clone())
@@ -120,29 +129,38 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
         ParquetWriter::new(cloud_writer).with_compression(ParquetCompression::Zstd(None));
     let mut batched_writer = pq_writer.batched(&schema).unwrap();
 
-    let union_args = UnionArgs {parallel : false,rechunk: true, ..Default::default()};
+    let union_args = UnionArgs {
+        parallel: false,
+        rechunk: true,
+        ..Default::default()
+    };
     eprintln!("starting to write new file to {}", &write_to_str);
-    for (i,df) in new_dfs.into_iter().enumerate() {
+    for (i, df) in new_dfs.into_iter().enumerate() {
         let node_id = df.column("node_id").unwrap().u64().unwrap().get(0).unwrap();
-        if i%100==0 || i<=10 {
-            eprintln!("working on node_id {} with {} rows; i={}", node_id, df.shape().0, i);
+        if i % 100 == 0 || i <= 10 {
+            eprintln!(
+                "working on node_id {} with {} rows; i={}",
+                node_id,
+                df.shape().0,
+                i
+            );
             eprintln!("{}", df);
         }
 
-        let existing_lf_clone=existing_lf.clone();
+        let existing_lf_clone = existing_lf.clone();
         let filt = tokio::task::spawn_blocking(move || {
             existing_lf_clone
-            .filter(col("node_id").eq(lit(node_id)))
-            .collect()
-            .unwrap()
+                .filter(col("node_id").eq(lit(node_id)))
+                .collect()
+                .unwrap()
         })
         .await
         .unwrap();
-        if i%100==0 || i<=10 {
+        if i % 100 == 0 || i <= 10 {
             eprintln!("have {} existing rows", filt.shape().0);
         }
         let lfs = vec![filt.lazy(), df.lazy()]; // keep this order for the concat keep last strategy
-      
+
         let new_rg = concat(lfs, union_args)
             .unwrap()
             .unique(
@@ -155,30 +173,33 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
             )
             .collect()
             .unwrap();
-        if i%100==0 || i<=10 {
+        if i % 100 == 0 || i <= 10 {
             eprintln!("about to write batch of {} rows", new_rg.shape().0);
         }
         batched_writer.write_batch(&new_rg).unwrap();
         existing_nodes.remove(&node_id);
     }
-    eprintln!("done with partitioned dfs, there are {} leftover nodes", existing_nodes.len());
+    eprintln!(
+        "done with partitioned dfs, there are {} leftover nodes",
+        existing_nodes.len()
+    );
     for node_id in existing_nodes {
-        let existing_lf_clone=existing_lf.clone();
+        let existing_lf_clone = existing_lf.clone();
 
         let new_rg = tokio::task::spawn_blocking(move || {
             existing_lf_clone
-            .clone()
-            .filter(col("node_id").eq(lit(node_id)))
-            .unique(
-                Some(vec!["utcbegin".to_string(), "node_id".to_string()]),
-                UniqueKeepStrategy::Any,
-            )
-            .sort(
-                vec!["utcbegin"],
-                SortMultipleOptions::new().with_order_descending(false),
-            )
-            .collect()
-            .unwrap()
+                .clone()
+                .filter(col("node_id").eq(lit(node_id)))
+                .unique(
+                    Some(vec!["utcbegin".to_string(), "node_id".to_string()]),
+                    UniqueKeepStrategy::Any,
+                )
+                .sort(
+                    vec!["utcbegin"],
+                    SortMultipleOptions::new().with_order_descending(false),
+                )
+                .collect()
+                .unwrap()
         })
         .await
         .unwrap();
@@ -194,7 +215,8 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
         &Path::from(write_to_str.replace("/_processing", "")),
         10,
     )
-    .await.unwrap();
+    .await
+    .unwrap();
     eprintln!("copied file from processing");
     let object_store = Arc::clone(&state.object_store);
     del_retry(object_store, write_to_path, 10).await.unwrap();
@@ -230,10 +252,11 @@ async fn copy_retry(
             )
             .await;
         match copy_res {
-            Ok(_)=> {
+            Ok(_) => {
                 eprintln!("copy worked");
-                return Ok(())},
-            Err(e)=>{
+                return Ok(());
+            }
+            Err(e) => {
                 eprintln!("{:?}", e);
             }
         };

@@ -4,11 +4,8 @@ use chrono::{DateTime, Duration, Utc};
 use chrono_tz::America::New_York;
 use num_integer::Integer;
 use polars::prelude::*;
-
-// use polars_plan::dsl::functions::datetime_range;
 use reqwest::{Client, Response, StatusCode};
 use std::{collections::HashMap, io::Cursor};
-
 
 pub const MILLION: i64 = 1_000_000;
 pub const BASE_URL: &str = "https://api.pjm.com/api/v1/";
@@ -18,6 +15,7 @@ pub const CONCAT_ARGS: UnionArgs = UnionArgs {
     to_supertypes: true,
     diagonal: false,
     from_partitioned_ds: false,
+    maintain_order: false,
 };
 pub fn check_len(lfs_len: &usize, results_len: &usize) -> Result<(), Errors> {
     if lfs_len != results_len {
@@ -63,10 +61,10 @@ pub fn check_len(lfs_len: &usize, results_len: &usize) -> Result<(), Errors> {
 //         Err(_) => return Err(Errors::PlErr),
 //     };
 //     let mut pricedates: Vec<NaiveDate> = vec![];
-    // pl.into_iter().for_each(|pricedate| {
-    //     if let Some(a) = pricedate {
-    //           pricedates.push(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap() + Duration::days(a as i64))
-    //          }});
+// pl.into_iter().for_each(|pricedate| {
+//     if let Some(a) = pricedate {
+//           pricedates.push(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap() + Duration::days(a as i64))
+//          }});
 
 //     Ok((pricedates, expr, is_month))
 // }
@@ -109,11 +107,11 @@ pub fn make_parameters(
 
     let end_time = match pjm_end_point.default_duration {
         Some(td) => begin_dt + td,
-        None => add_ept_day(begin_dt)
+        None => add_ept_day(begin_dt),
     };
 
     let end_str = end_time.format("%m-%d-%Y %H:%M").to_string();
-    let datetime_entry =format!("{} to {}", begin_str, end_str);
+    let datetime_entry = format!("{} to {}", begin_str, end_str);
 
     let row_count = 50_000;
     let mut params = HashMap::new();
@@ -159,7 +157,10 @@ pub async fn pjm_pre_fetch(
         };
         return Err(status_code);
     };
-    eprintln!("prefetch {} {:?} good status", pjm_end_point.url_suffix, begin_dt);
+    eprintln!(
+        "prefetch {} {:?} good status",
+        pjm_end_point.url_suffix, begin_dt
+    );
     let resp_headers = response.headers();
 
     let total_rows = match resp_headers.get("x-totalrows") {
@@ -237,7 +238,13 @@ pub async fn pjm_fetch(
         .cust_unwrap()?;
 
     if !response.status().is_success() {
-        eprintln!("fetch {} {:?} {} bad status {}", pjm_end_point.url_suffix, begin_dt, start_row, response.status());
+        eprintln!(
+            "fetch {} {:?} {} bad status {}",
+            pjm_end_point.url_suffix,
+            begin_dt,
+            start_row,
+            response.status()
+        );
         let status_code = match response.status() {
             StatusCode::TOO_MANY_REQUESTS => Errors::PJMTooMany,
             _ => Errors::PJMOther,
@@ -249,7 +256,10 @@ pub async fn pjm_fetch(
         };
         return Err(status_code);
     };
-    eprintln!("fetch {} {:?} {} good status", pjm_end_point.url_suffix, begin_dt, start_row);
+    eprintln!(
+        "fetch {} {:?} {} good status",
+        pjm_end_point.url_suffix, begin_dt, start_row
+    );
 
     let bytes = handle_bytes(response.bytes().await)?;
 

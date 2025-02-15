@@ -1,6 +1,6 @@
 use super::parser_utils::*;
-use crate::{errors::*, routes::queue_triggers::dbfuncs::df_to_db};
 use crate::structs::cust::*;
+use crate::{errors::*, routes::queue_triggers::dbfuncs::df_to_db};
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use polars::prelude::*;
@@ -8,7 +8,6 @@ use polars_io::cloud::CloudWriter;
 use std::cmp;
 use tokio::task::{self, JoinHandle};
 use uuid::Uuid;
-use polars_plan::dsl::*;
 
 pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>, Errors> {
     let pjm_end_point = &in_msg.pjm_end_point;
@@ -66,8 +65,8 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
     check_len(&lfs.len(), results_len)?;
 
     let lf = concat(lfs, CONCAT_ARGS)
-    .cust_unwrap()?
-    .filter(col("pricedate").eq(col("pricedate").min()));
+        .cust_unwrap()?
+        .filter(col("pricedate").eq(col("pricedate").min()));
     // The filter is to keep each file representing no more than 1 day for the rt to da process, it'd be more efficient
     // to change the parameters such that it doesn't download multiple days but that should be a rare occurence
     let next_time: DateTime<Utc> = get_next_time(&lf, pjm_end_point.next_time)?;
@@ -81,11 +80,17 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
     let mut df = tokio::task::spawn_blocking(|| lf.collect().expect("final df collect"))
         .await
         .expect("err final df");
+    
     let now = Utc::now();
     df_to_db(&df).await;
     let after = Utc::now();
-    let secs = after-now;
-    eprintln!("{:?} {} uploading to db took {} secs",&begin_dt, &pjm_end_point.url_suffix,secs.num_seconds());
+    let secs = after - now;
+    eprintln!(
+        "{:?} {} uploading to db took {} secs",
+        &begin_dt,
+        &pjm_end_point.url_suffix,
+        secs.num_seconds()
+    );
     let now = Utc::now();
     let mut cloud_writer =
         CloudWriter::new_with_object_store(objstore, save_path.into()).expect("cloud writer");
@@ -93,8 +98,12 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
         .finish(&mut df)
         .expect("Couldn't write file");
     let after = Utc::now();
-    let secs = after-now;
-    eprintln!("{:?} {} saving file took {} secs",&begin_dt, &pjm_end_point.url_suffix,secs.num_seconds());
+    let secs = after - now;
+    eprintln!(
+        "{:?} {} saving file took {} secs",
+        &begin_dt,
+        &pjm_end_point.url_suffix,
+        secs.num_seconds()
+    );
     Ok(next_time)
 }
-
