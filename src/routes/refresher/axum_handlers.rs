@@ -61,16 +61,24 @@ pub async fn refresher(
         Logs: None,
         ReturnValue: None,
     };
-    eprintln!("refresher");
+
+    let mut did_nothing = true;
     for q in Queues::ALL {
         match q.check_queue().await {
-            0 => make_next_queue(&q, Arc::clone(&state)).await,
-            1 => {
-                eprintln!("doing nothing");
+            0 => {
+                make_next_queue(&q, Arc::clone(&state)).await;
+                did_nothing = false;
             }
-            _ => peak_multiple_jobs(&q).await,
+            1 => {}
+            _ => {
+                peak_multiple_jobs(&q).await;
+                did_nothing = false;
+            }
         }
     }
+    if did_nothing {
+        eprintln!("refresher did nothing");
+    };
     (StatusCode::OK, Json(final_resp))
 }
 
