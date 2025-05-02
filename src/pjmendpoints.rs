@@ -1,7 +1,9 @@
 use crate::errors::Errors;
+use crate::routes::refresher::axum_handlers::Queues;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc, Weekday};
 use chrono_tz::America::New_York;
 use polars::prelude::*;
+
 static STRP_FMT: PlSmallStr = PlSmallStr::from_static("%Y-%m-%dT%H:%M:%S");
 static UTC: PlSmallStr = PlSmallStr::from_static("UTC");
 static NY: PlSmallStr = PlSmallStr::from_static("America/New_York");
@@ -192,6 +194,16 @@ impl TryFrom<&str> for PJMEndPoint {
             "rt_fivemin_hrl_lmps" => Ok(rt_fivemin_hrl_lmps()),
             "rt_unverified_fivemin_lmps" => Ok(rt_unverified_fivemin_lmps()),
             _ => Err(Errors::NoPJMEndPoint),
+        }
+    }
+}
+
+impl From<&Queues> for PJMEndPoint {
+    fn from(queue: &Queues) -> Self {
+        match queue {
+            Queues::DaPrices => da_hrl_lmps(),
+            Queues::RtVerf => rt_fivemin_hrl_lmps(),
+            Queues::RtUnverf => rt_unverified_fivemin_lmps(),
         }
     }
 }

@@ -6,11 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
+const DATEFMT: &str = "%Y-%m-%dT%H:%M:%S%z";
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct InMsgJson {
     pub begin_time_iso_str: String,
     pub pjm_end_point: String,
     pub queue_next: bool,
+    pub last_retry: Option<String>,
 }
 
 #[derive(Clone)]
@@ -18,6 +20,7 @@ pub struct InMsg {
     pub begin_time: DateTime<Utc>,
     pub pjm_end_point: PJMEndPoint,
     pub queue_next: bool,
+    pub last_retry: Option<DateTime<Utc>>,
 }
 #[derive(Eq, Hash, PartialEq, Deserialize, Serialize, Debug, Clone)]
 pub struct RtToDa {
@@ -105,10 +108,14 @@ impl TryInto<InMsg> for Value {
         let in_msg_json: InMsgJson = self.try_into()?;
         let dt = {
             let begin_time_iso_str = in_msg_json.begin_time_iso_str.clone();
-            let begin_naive_dt =
-                DateTime::parse_from_str(&begin_time_iso_str, "%Y-%m-%dT%H:%M:%S%z").unwrap();
+            let begin_naive_dt = DateTime::parse_from_str(&begin_time_iso_str, DATEFMT).unwrap();
             begin_naive_dt.with_timezone(&Utc)
         };
+        let last_retry = in_msg_json.last_retry.map(|iso_str| {
+            let naive_dt = DateTime::parse_from_str(&iso_str, DATEFMT).unwrap();
+            naive_dt.with_timezone(&Utc)
+        });
+
         let pjm_end_point: PJMEndPoint = match in_msg_json.pjm_end_point.as_str().try_into() {
             Ok(pjm_end_point) => pjm_end_point,
             _ => return Err(Errors::NoPJMEndPoint),
@@ -117,18 +124,21 @@ impl TryInto<InMsg> for Value {
             begin_time: dt,
             pjm_end_point,
             queue_next: in_msg_json.queue_next,
+            last_retry,
         })
     }
 }
 
 impl From<&InMsg> for InMsgJson {
     fn from(val: &InMsg) -> Self {
-        let beg_str = val.begin_time.format("%Y-%m-%dT%H:%M:%S%z").to_string();
+        let beg_str = val.begin_time.format(DATEFMT).to_string();
         let pjm_end_point = val.pjm_end_point.url_suffix.to_string();
+        let last_retry = val.last_retry.map(|x| x.format(DATEFMT).to_string());
         InMsgJson {
             begin_time_iso_str: beg_str,
             pjm_end_point,
             queue_next: val.queue_next,
+            last_retry,
         }
     }
 }

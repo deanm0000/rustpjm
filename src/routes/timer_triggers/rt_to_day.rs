@@ -105,7 +105,7 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
     );
     let mut existing_nodes = get_nodes(existing_file.as_str()).await;
     let existing_lf = match existing_nodes.len() {
-        0 => DataFrame::empty_with_schema(&schema).lazy(),
+        0 => DataFrame::empty_with_schema(schema).lazy(),
         _ => {
             let lf = tokio::task::spawn_blocking(move || {
                 LazyFrame::scan_parquet(existing_file.clone(), ScanArgsParquet::default()).unwrap()
@@ -127,7 +127,7 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
 
     let pq_writer =
         ParquetWriter::new(cloud_writer).with_compression(ParquetCompression::Zstd(None));
-    let mut batched_writer = pq_writer.batched(&schema).unwrap();
+    let mut batched_writer = pq_writer.batched(schema).unwrap();
 
     let union_args = UnionArgs {
         parallel: false,

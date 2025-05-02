@@ -1,0 +1,10 @@
+{
+  "bindings": [
+    {
+      "name": "refresher",
+      "type": "timerTrigger",
+      "direction": "in",
+      "schedule": "0 */1 * * * *"
+    }
+  ]
+}

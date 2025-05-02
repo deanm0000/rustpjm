@@ -10,6 +10,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::Utc;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -43,6 +44,7 @@ async fn queue_trigger(
                             begin_time: next_time,
                             pjm_end_point: in_msg.pjm_end_point.clone(),
                             queue_next: true,
+                            last_retry: None,
                         };
                         let when_next_expected = in_msg.pjm_end_point.expected(next_time);
                         put_to_queue(new_queue_item, when_next_expected).await?;
@@ -50,12 +52,36 @@ async fn queue_trigger(
                 }
                 Err(Errors::PJM0Rows) => {
                     let pjm_end_point = in_msg.pjm_end_point.clone();
+
+                    let new_in_msg = &InMsg {
+                        begin_time: in_msg.begin_time,
+                        pjm_end_point: in_msg.pjm_end_point.clone(),
+                        queue_next: in_msg.queue_next,
+                        last_retry: Some(Utc::now()),
+                    };
                     let when_next_res = pjm_end_point.expected(in_msg.begin_time);
+                    let when_next_res = match in_msg.last_retry {
+                        Some(last_retry) => {
+                            let seconds_since = (Utc::now() - last_retry).num_seconds();
+                            match (seconds_since < 60, when_next_res <= 120) {
+                                (true, true) => {
+                                    eprintln!(
+                                        "{} {} trying too much, waiting 2 min",
+                                        in_msg.pjm_end_point.url_suffix, in_msg.begin_time
+                                    );
+                                    120
+                                }
+                                _ => when_next_res,
+                            }
+                        }
+                        None => when_next_res,
+                    };
                     eprintln!(
                         "got 0 rows will add new item to queue in {} sec",
                         when_next_res
                     );
-                    put_to_queue(&in_msg, when_next_res).await?;
+
+                    put_to_queue(new_in_msg, when_next_res).await?;
                 }
                 Err(e) => {
                     eprintln!("{:?}", e);

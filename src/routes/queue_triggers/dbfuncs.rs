@@ -101,7 +101,6 @@ pub async fn df_to_db(df: &DataFrame) {
     let insert_table = format!("INSERT INTO {} ({}) ", table_name, column_names.join(", "));
 
     let ins_tups: Vec<(PjmNodes, String, String, i32, f64, f64, f64)> = (0..to_insert_df.height())
-        .into_iter()
         .map(|row| {
             let row_vals = to_insert_df.get_row(row).unwrap().0;
             (

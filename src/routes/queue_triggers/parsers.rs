@@ -80,7 +80,7 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
     let mut df = tokio::task::spawn_blocking(|| lf.collect().expect("final df collect"))
         .await
         .expect("err final df");
-    
+
     let now = Utc::now();
     df_to_db(&df).await;
     let after = Utc::now();

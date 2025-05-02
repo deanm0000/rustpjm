@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use routes::queue_triggers::axum_handlers::*;
+use routes::refresher::axum_handlers::*;
 use std::sync::Arc;
 use std::{collections::HashSet, env};
 use structs::cust::*;
@@ -34,6 +35,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(root))
         .route("/queueTrigger:queue", post(queue_trigger_wrapper))
+        .route("/refresher", post(refresher))
         // .route("/TimerTrigger:queue", post(queue_trigger_wrapper))
         .with_state(state)
         .fallback(not_found);
