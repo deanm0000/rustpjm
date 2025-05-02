@@ -39,35 +39,31 @@ async fn queue_trigger(
             let next_time = pjm(&in_msg, state).await;
             match next_time {
                 Ok(next_time) => {
-                    if in_msg.queue_next {
-                        let new_queue_item = &InMsg {
-                            begin_time: next_time,
-                            pjm_end_point: in_msg.pjm_end_point.clone(),
-                            queue_next: true,
-                            last_retry: None,
-                        };
-                        let when_next_expected = in_msg.pjm_end_point.expected(next_time);
-                        put_to_queue(new_queue_item, when_next_expected).await?;
-                    };
+                    in_msg.do_next_queue(next_time).await;
+                    // if in_msg.queue_next {
+                    //     let new_queue_item = &InMsg {
+                    //         begin_time: next_time,
+                    //         pjm_end_point: in_msg.pjm_end_point.clone(),
+                    //         queue_next: true,
+                    //         last_retry: None,
+                    //     };
+                    //     let when_next_expected = in_msg.pjm_end_point.expected(next_time);
+                    //     put_to_queue(new_queue_item, when_next_expected).await?;
+                    // };
                 }
                 Err(Errors::PJM0Rows) => {
-                    let pjm_end_point = in_msg.pjm_end_point.clone();
-
-                    let new_in_msg = &InMsg {
-                        begin_time: in_msg.begin_time,
-                        pjm_end_point: in_msg.pjm_end_point.clone(),
-                        queue_next: in_msg.queue_next,
-                        last_retry: Some(Utc::now()),
-                    };
-                    let when_next_res = pjm_end_point.expected(in_msg.begin_time);
-                    let when_next_res = match in_msg.last_retry {
+                    let old_retry = in_msg.last_retry.clone();
+                    let new_in_msg = in_msg.with_last_retry(Utc::now());
+                    let pjm_end_point = &new_in_msg.pjm_end_point;
+                    let when_next_res = pjm_end_point.expected(new_in_msg.begin_time);
+                    let when_next_res = match old_retry {
                         Some(last_retry) => {
                             let seconds_since = (Utc::now() - last_retry).num_seconds();
                             match (seconds_since < 60, when_next_res <= 120) {
                                 (true, true) => {
                                     eprintln!(
                                         "{} {} trying too much, waiting 2 min",
-                                        in_msg.pjm_end_point.url_suffix, in_msg.begin_time
+                                        new_in_msg.pjm_end_point.url_suffix, new_in_msg.begin_time
                                     );
                                     120
                                 }
@@ -77,11 +73,11 @@ async fn queue_trigger(
                         None => when_next_res,
                     };
                     eprintln!(
-                        "got 0 rows will add new item to queue in {} sec",
-                        when_next_res
+                        "{} {} got 0 rows will add new item to queue in {} sec",
+                        new_in_msg.pjm_end_point.url_suffix, new_in_msg.begin_time, when_next_res
                     );
 
-                    put_to_queue(new_in_msg, when_next_res).await?;
+                    put_to_queue(&new_in_msg, when_next_res).await?;
                 }
                 Err(e) => {
                     eprintln!("{:?}", e);

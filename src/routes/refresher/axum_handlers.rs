@@ -109,7 +109,7 @@ async fn parse_file_list_last_time(queue: &Queues, files: &[obPath]) {
         })
         .max();
     if last.is_none() {
-        eprintln!("couldn't parse datetimes");
+        eprintln!("{} refresher couldn't parse datetimes {}", queue, files[0]);
         return get_lazy_frame_last_time(queue).await;
     }
     let last = last.unwrap();

@@ -1,3 +1,4 @@
+use crate::utils::*;
 use crate::{errors::*, pjmendpoints::PJMEndPoint};
 use chrono::{DateTime, Utc};
 use object_store::ObjectStore;
@@ -54,6 +55,30 @@ pub struct TimerMsg {
     Schedule: AdjForDST,
     ScheduleStatus: Option<ScheduleStatus>,
     IsPastDue: bool,
+}
+impl InMsg {
+    pub fn with_last_retry(self, last_retry: DateTime<Utc>) -> InMsg {
+        let new = InMsg {
+            last_retry: Some(last_retry),
+            ..self
+        };
+        new
+    }
+    pub async fn do_next_queue(self, next_time: DateTime<Utc>) {
+        if !self.queue_next {
+            return;
+        };
+        let new_queue_item = &InMsg {
+            begin_time: next_time,
+            pjm_end_point: self.pjm_end_point.clone(),
+            queue_next: true,
+            last_retry: None,
+        };
+        let when_next_expected = self.pjm_end_point.expected(next_time);
+        put_to_queue(new_queue_item, when_next_expected)
+            .await
+            .unwrap();
+    }
 }
 
 impl TryInto<InMsgJson> for Value {
