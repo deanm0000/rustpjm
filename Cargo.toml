@@ -28,3 +28,5 @@ syn = "2.0.94"
 uuid = {version="1.11.0", features = ["v4", "fast-rng"]}
 sqlx = {version="0.8.3", features = ["postgres","runtime-tokio","tls-native-tls"]}
 openssl = {version="0.10.68", features = ["vendored"]}
+strum = "0.27.1"
+strum_macros = "0.27.1"

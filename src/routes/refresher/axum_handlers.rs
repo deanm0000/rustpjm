@@ -10,7 +10,10 @@ use futures::TryStreamExt;
 use object_store::path::Path as obPath;
 use std::fmt;
 use std::sync::Arc;
-#[derive(Clone)]
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+
+#[derive(Clone, EnumIter, Debug)]
 pub enum Queues {
     DaPrices,
     RtVerf,
@@ -47,8 +50,56 @@ impl Queues {
         let meta = queue_client.get_metadata().into_future().await.unwrap();
         meta.approximate_messages_count
     }
+    async fn make_next_queue(self, state: Arc<AppState>) {
+        eprintln!("make next {} queue", self);
+        let state = Arc::clone(&state);
+        let obj_store = Arc::clone(&state.object_store);
+        let path = obPath::from(self.storage());
+        let stream = obj_store.list(Some(&path));
+        let mut files: Vec<obPath> = Vec::new();
 
-    const ALL: [Queues; 3] = [Queues::DaPrices, Queues::RtVerf, Queues::RtUnverf];
+        let mut batches = stream.try_chunks(100);
+        while let Some(Ok(chunk)) = batches.next().await {
+            for file_meta in chunk {
+                files.push(file_meta.location)
+            }
+        }
+        eprintln!("have {} files", files.len());
+        match files.len() {
+            0 => self.get_lazy_frame_last_time().await,
+            _ => self.parse_file_list_last_time(&files).await,
+        }
+    }
+    async fn get_lazy_frame_last_time(self) {
+        eprintln!("ignoring get_lazy_frame_last_time {}", self.trigger())
+    }
+    async fn parse_file_list_last_time(self, files: &[obPath]) {
+        let last = files
+            .iter()
+            .filter_map(|path| {
+                path.filename()
+                    .and_then(|filename| filename.get(..20))
+                    .and_then(|datetime_str| datetime_str.parse::<DateTime<Utc>>().ok())
+            })
+            .max();
+        if last.is_none() {
+            eprintln!("{} refresher couldn't parse datetimes {}", self, files[0]);
+            return self.get_lazy_frame_last_time().await;
+        }
+        let last = last.unwrap();
+        let end_point = PJMEndPoint::from(&self);
+        let next_time = last + end_point.next_time;
+        let msg = InMsg {
+            begin_time: next_time,
+            pjm_end_point: end_point,
+            queue_next: true,
+            last_retry: None,
+        };
+        put_to_queue(&msg, 0).await.unwrap();
+    }
+    async fn peak_multiple_jobs(self) {
+        eprintln!("ignoring peak_multiple_jobs {}", self.trigger())
+    }
 }
 
 pub async fn refresher(
@@ -63,15 +114,15 @@ pub async fn refresher(
     };
 
     let mut did_nothing = true;
-    for q in Queues::ALL {
+    for q in Queues::iter() {
         match q.check_queue().await {
             0 => {
-                make_next_queue(&q, Arc::clone(&state)).await;
+                q.make_next_queue(Arc::clone(&state)).await;
                 did_nothing = false;
             }
             1 => {}
             _ => {
-                peak_multiple_jobs(&q).await;
+                q.peak_multiple_jobs().await;
                 did_nothing = false;
             }
         }
@@ -80,58 +131,4 @@ pub async fn refresher(
         eprintln!("refresher did nothing");
     };
     (StatusCode::OK, Json(final_resp))
-}
-
-async fn make_next_queue(queue: &Queues, state: Arc<AppState>) {
-    eprintln!("make next {} queue", queue);
-    let state = Arc::clone(&state);
-    let obj_store = Arc::clone(&state.object_store);
-    let path = obPath::from(queue.storage());
-    let stream = obj_store.list(Some(&path));
-    let mut files: Vec<obPath> = Vec::new();
-
-    let mut batches = stream.try_chunks(100);
-    while let Some(Ok(chunk)) = batches.next().await {
-        for file_meta in chunk {
-            files.push(file_meta.location)
-        }
-    }
-    eprintln!("have {} files", files.len());
-    match files.len() {
-        0 => get_lazy_frame_last_time(queue).await,
-        _ => parse_file_list_last_time(queue, &files).await,
-    }
-}
-
-async fn get_lazy_frame_last_time(queue: &Queues) {
-    eprintln!("ignoring get_lazy_frame_last_time {}", queue.trigger())
-}
-
-async fn parse_file_list_last_time(queue: &Queues, files: &[obPath]) {
-    let last = files
-        .iter()
-        .filter_map(|path| {
-            path.filename()
-                .and_then(|filename| filename.get(..20))
-                .and_then(|datetime_str| datetime_str.parse::<DateTime<Utc>>().ok())
-        })
-        .max();
-    if last.is_none() {
-        eprintln!("{} refresher couldn't parse datetimes {}", queue, files[0]);
-        return get_lazy_frame_last_time(queue).await;
-    }
-    let last = last.unwrap();
-    let end_point = PJMEndPoint::from(queue);
-    let next_time = last + end_point.next_time;
-    let msg = InMsg {
-        begin_time: next_time,
-        pjm_end_point: end_point,
-        queue_next: true,
-        last_retry: None,
-    };
-    put_to_queue(&msg, 0).await.unwrap();
-}
-
-async fn peak_multiple_jobs(queue: &Queues) {
-    eprintln!("ignoring peak_multiple_jobs {}", queue.trigger())
 }
