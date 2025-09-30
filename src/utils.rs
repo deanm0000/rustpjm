@@ -9,16 +9,13 @@ use core::time::Duration;
 use object_store::azure::MicrosoftAzureBuilder;
 use reqwest::{header::HeaderValue, Client};
 use serde_json::to_string;
-use std::{borrow::Cow, env};
+use std::env;
 
 pub async fn put_to_queue(msg: &InMsg, visibility_timeout_secs: u32) -> Result<(), Errors> {
     let queue_name = msg.pjm_end_point.url_suffix.replace("_", "");
-    let queue_client = make_queue_client(queue_name.as_str());
+    let queue_client = make_queue_client(queue_name.as_str())?;
     let msg_json: InMsgJson = msg.into();
-    let new_queue_json = match to_string(&msg_json) {
-        Ok(new_queue_json) => new_queue_json,
-        _ => return Err(Errors::QTToString),
-    };
+    let new_queue_json = to_string(&msg_json).map_err(|e| Errors::QTToString(e.to_string()))?;
     let new_queue_b64 = BASE64_STANDARD.encode(new_queue_json);
 
     let message = {
@@ -48,36 +45,34 @@ pub async fn put_to_queue(msg: &InMsg, visibility_timeout_secs: u32) -> Result<(
 
 pub fn make_headers() -> Result<HeaderMap, Errors> {
     let mut headers = HeaderMap::new();
-    let api_key: Cow<str> = match env::var("PJMKEY") {
-        Ok(val) => Cow::Owned(val),
-        Err(_) => return Err(Errors::MissingEnvVar),
-    };
-    let api_key: &str = &api_key;
-    let header_value = HeaderValue::from_str(api_key)
-        .unwrap_or_else(|_| panic!("atheadervalue with {}", &api_key.len()));
+    let api_key = env::var("PJMKEY").map_err(|_| Errors::MissingEnvVar("PJMKEY".to_string()))?;
+    let header_value =
+        HeaderValue::from_str(&api_key).map_err(|e| Errors::MakeHeader(e.to_string()))?;
     headers.insert("Ocp-Apim-Subscription-Key", header_value);
     Ok(headers)
 }
 
-pub fn make_object_store() -> object_store::azure::MicrosoftAzure {
+pub fn make_object_store() -> Result<object_store::azure::MicrosoftAzure, Errors> {
     MicrosoftAzureBuilder::from_env()
         .with_container_name("pjm")
         .build()
-        .expect("making object store")
+        .map_err(|e| Errors::ObjStore(e.to_string()))
 }
 
-pub fn make_req_client() -> Client {
-    Client::builder()
-        .default_headers(make_headers().expect("making headers in client maker"))
+pub fn make_req_client() -> Result<Client, Errors> {
+    Ok(Client::builder()
+        .default_headers(make_headers()?)
         .gzip(true)
         .build()
-        .expect("making client")
+        .map_err(|e| Errors::Reqwest(e.to_string()))?)
 }
 
-pub fn make_queue_client(queue_name: &str) -> QueueClient {
-    let account = std::env::var("AZURE_QUEUE_ACCOUNT").expect("missing STORAGE_ACCOUNT");
-    let access_key = std::env::var("AZURE_QUEUE_KEY").expect("missing STORAGE_ACCESS_KEY");
+pub fn make_queue_client(queue_name: &str) -> Result<QueueClient, Errors> {
+    let account = std::env::var("AZURE_QUEUE_ACCOUNT")
+        .map_err(|_| Errors::MissingEnvVar("AZURE_QUEUE_ACCOUNT".to_string()))?;
+    let access_key = std::env::var("AZURE_QUEUE_KEY")
+        .map_err(|_| Errors::MissingEnvVar("AZURE_QUEUE_KEY".to_string()))?;
     let storage_credentials = StorageCredentials::access_key(account.clone(), access_key);
     let queue_service = QueueServiceClient::new(account, storage_credentials);
-    queue_service.queue_client(queue_name)
+    Ok(queue_service.queue_client(queue_name))
 }

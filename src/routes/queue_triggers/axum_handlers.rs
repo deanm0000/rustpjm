@@ -32,93 +32,58 @@ async fn queue_trigger(
         }
     };
     eprintln!("{:?}", val);
-    let in_msg: Result<InMsg, Errors> = val.clone().try_into();
+    let in_msg: InMsg = val.clone().try_into()?;
 
-    let res = match in_msg {
-        Ok(in_msg) => {
-            let next_time = pjm(&in_msg, state).await;
-            match next_time {
-                Ok(next_time) => {
-                    in_msg.do_next_queue(next_time).await;
-                    // if in_msg.queue_next {
-                    //     let new_queue_item = &InMsg {
-                    //         begin_time: next_time,
-                    //         pjm_end_point: in_msg.pjm_end_point.clone(),
-                    //         queue_next: true,
-                    //         last_retry: None,
-                    //     };
-                    //     let when_next_expected = in_msg.pjm_end_point.expected(next_time);
-                    //     put_to_queue(new_queue_item, when_next_expected).await?;
-                    // };
-                }
-                Err(Errors::PJM0Rows) => {
-                    let old_retry = in_msg.last_retry.clone();
-                    let new_in_msg = in_msg.with_last_retry(Utc::now());
-                    let pjm_end_point = &new_in_msg.pjm_end_point;
-                    let when_next_res = pjm_end_point.expected(new_in_msg.begin_time);
-                    let when_next_res = match old_retry {
-                        Some(last_retry) => {
-                            let seconds_since = (Utc::now() - last_retry).num_seconds();
-                            match (seconds_since < 60, when_next_res <= 120) {
-                                (true, true) => {
-                                    eprintln!(
-                                        "{} {} trying too much, waiting 2 min",
-                                        new_in_msg.pjm_end_point.url_suffix, new_in_msg.begin_time
-                                    );
-                                    120
-                                }
-                                _ => when_next_res,
-                            }
-                        }
-                        None => when_next_res,
-                    };
-                    eprintln!(
-                        "{} {} got 0 rows will add new item to queue in {} sec",
-                        new_in_msg.pjm_end_point.url_suffix, new_in_msg.begin_time, when_next_res
-                    );
-
-                    put_to_queue(&new_in_msg, when_next_res).await?;
-                }
-                Err(e) => {
-                    eprintln!("{:?}", e);
-                }
-            }
-
-            Ok(StatusCode::OK)
+    let next_time = pjm(&in_msg, state).await;
+    match next_time {
+        Ok(next_time) => {
+            in_msg.do_next_queue(next_time).await?;
+            return Ok(StatusCode::OK);
         }
-        Err(e) => Err(e),
-    };
+        Err(Errors::PJM0Rows) => {
+            let old_retry = in_msg.last_retry;
+            let new_in_msg = in_msg.with_last_retry(Utc::now());
+            let pjm_end_point = &new_in_msg.pjm_end_point;
+            let when_next_res = pjm_end_point.expected(new_in_msg.begin_time)?;
+            let when_next_res = match old_retry {
+                Some(last_retry) => {
+                    let seconds_since = (Utc::now() - last_retry).num_seconds();
+                    match (seconds_since < 60, when_next_res <= 120) {
+                        (true, true) => {
+                            eprintln!(
+                                "{} {} trying too much, waiting 2 min",
+                                new_in_msg.pjm_end_point.url_suffix, new_in_msg.begin_time
+                            );
+                            120
+                        }
+                        _ => when_next_res,
+                    }
+                }
+                None => when_next_res,
+            };
+            eprintln!(
+                "{} {} got 0 rows will add new item to queue in {} sec",
+                new_in_msg.pjm_end_point.url_suffix, new_in_msg.begin_time, when_next_res
+            );
 
-    if res.is_ok() {
-        return res;
+            put_to_queue(&new_in_msg, when_next_res).await?;
+        }
+        Err(e) => {
+            eprintln!("{:?}", e);
+        }
     };
 
     eprintln!("not in_msg");
 
-    let rt_to_da: Result<RtToDa, Errors> = val.clone().try_into();
-
-    match rt_to_da {
-        Ok(rt_to_da) => parse_rt_to_da_starter(rt_to_da, Arc::clone(state)).await,
-        Err(e) => Err(e),
-    }
-
-    // let timer_msg: Result<TimerMsg, Errors> = val.clone().try_into();
-    // let res = timer_trigger(key, &state).await;
-    // let res = match timer_msg {
-    //     Ok(_) => {
-    //         eprintln!("in match");
-    //         let a=timer_trigger(key, &state).await;
-    //         eprintln!("after timer");
-    //         a},
-    //     Err(e) => Err(e),
-    // };
+    let rt_to_da: RtToDa = val.clone().try_into()?;
+    parse_rt_to_da_starter(rt_to_da, Arc::clone(state)).await
 }
 
 pub async fn queue_trigger_wrapper(
     Path(queue): Path<String>,
     State(state): State<Arc<AppState>>,
     result: Result<Json<FuncRequest>, axum::extract::rejection::JsonRejection>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, Errors> {
     {
         let mut active_tasks = state.active_tasks.lock().await;
         *active_tasks += 1;
@@ -127,6 +92,20 @@ pub async fn queue_trigger_wrapper(
         // #[allow(clippy::clone_on_copy)]
         // active_tasks.clone()
     };
+    // TODO: if active_tasks is too big then send job to queue instead of running it.
+
+    let pre_status = panic::catch_unwind(AssertUnwindSafe(|| async {
+        queue_trigger(queue, &state, result).await
+    }));
+    // let pre_status = queue_trigger(queue, &state, result).await;
+    {
+        let mut active_tasks = state.active_tasks.lock().await;
+        *active_tasks -= 1;
+    };
+    let pre_status = pre_status
+        .map_err(|e| Errors::Panic(format!("panic catch\n{:?}", e)))?
+        .await;
+    let status = pre_status?;
 
     let final_resp = OutResponse {
         Outputs: None,
@@ -134,31 +113,7 @@ pub async fn queue_trigger_wrapper(
         ReturnValue: None,
     };
 
-    let pre_code = panic::catch_unwind(AssertUnwindSafe(|| async {
-        queue_trigger(queue, &state, result).await
-    }));
-    // let pre_code = queue_trigger(queue, &state, result).await;
-    {
-        let mut active_tasks = state.active_tasks.lock().await;
-        *active_tasks -= 1;
-    };
-    // let status = match pre_code {
-    //     Ok(res) => res,
-    //     Err(Errors::QTJson) => StatusCode::CONFLICT,
-    //     Err(Errors::HashMapkey) => StatusCode::FAILED_DEPENDENCY,
-    //     _ => StatusCode::GONE,
-    // };
-    let status = match pre_code {
-        Ok(code) => match code.await {
-            Ok(res) => res,
-            Err(Errors::QTJson) => StatusCode::CONFLICT,
-            Err(Errors::HashMapkey) => StatusCode::FAILED_DEPENDENCY,
-            _ => StatusCode::GONE,
-        },
-        Err(_) => StatusCode::GATEWAY_TIMEOUT,
-    };
-
-    (status, Json(final_resp))
+    Ok((status, Json(final_resp)))
 }
 
 pub async fn not_found(OriginalUri(uri): OriginalUri, body: Bytes) -> (StatusCode, String) {

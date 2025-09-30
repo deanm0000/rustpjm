@@ -3,6 +3,10 @@ use polars::prelude::*;
 use sqlx::QueryBuilder;
 use sqlx::{Pool, Postgres};
 
+use crate::errors::Errors;
+
+type InsTuple = (PjmNodes, String, String, i32, f64, f64, f64);
+
 #[derive(sqlx::Type, Debug, Clone)]
 #[sqlx(type_name = "pjm_nodes", rename_all = "lowercase")]
 enum PjmNodes {
@@ -32,9 +36,10 @@ impl From<String> for PjmNodes {
     }
 }
 
-pub async fn df_to_db(df: &DataFrame) {
-    let username = std::env::var("PGUSER").unwrap();
-    let password = std::env::var("PGPW").unwrap();
+pub async fn df_to_db(df: &DataFrame) -> Result<(), Errors> {
+    let username =
+        std::env::var("PGUSER").map_err(|_| Errors::MissingEnvVar("PGUSER".to_string()))?;
+    let password = std::env::var("PGPW").map_err(|_| Errors::MissingEnvVar("PGPW".to_string()))?;
 
     let database_url = format!(
         "postgresql://{}:{}@projectsdb.usspapps.com:55669/projects?sslmode=require",
@@ -42,14 +47,14 @@ pub async fn df_to_db(df: &DataFrame) {
     );
     let pool = Pool::<Postgres>::connect(database_url.as_str())
         .await
-        .unwrap();
+        .map_err(|e| Errors::DBCantConnect(e.to_string()))?;
 
     let s = Series::new("node_id".into(), [2156110049u64, 45565887u64, 35010337u64]);
     let node_indx = DataFrame::new(vec![
         s.clone().into(),
         Series::new("node".into(), ["fern", "camden", "dom"]).into(),
     ])
-    .unwrap()
+    .map_err(|e| Errors::PlErr(e.to_string()))?
     .lazy();
 
     let column_names: Vec<&str> = df
@@ -90,7 +95,7 @@ pub async fn df_to_db(df: &DataFrame) {
         .left_join(node_indx, col("node_id"), col("node_id"))
         .select(cols)
         .collect()
-        .unwrap();
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
 
     let column_names: Vec<&str> = to_insert_df
         .get_column_names()
@@ -100,20 +105,32 @@ pub async fn df_to_db(df: &DataFrame) {
 
     let insert_table = format!("INSERT INTO {} ({}) ", table_name, column_names.join(", "));
 
-    let ins_tups: Vec<(PjmNodes, String, String, i32, f64, f64, f64)> = (0..to_insert_df.height())
+    let ins_tups: Result<Vec<InsTuple>, Errors> = (0..to_insert_df.height())
         .map(|row| {
-            let row_vals = to_insert_df.get_row(row).unwrap().0;
-            (
+            let row_vals = to_insert_df
+                .get_row(row)
+                .map_err(|e| Errors::PlErr(e.to_string()))?
+                .0;
+            Ok((
                 row_vals[0].to_string().into(),
                 row_vals[1].to_string(),
                 row_vals[2].to_string(),
-                row_vals[3].try_extract::<u8>().unwrap() as i32,
-                row_vals[4].try_extract::<f64>().unwrap(),
-                row_vals[5].try_extract::<f64>().unwrap(),
-                row_vals[6].try_extract::<f64>().unwrap(),
-            )
+                row_vals[3]
+                    .try_extract::<u8>()
+                    .map_err(|e| Errors::PlErr(e.to_string()))? as i32,
+                row_vals[4]
+                    .try_extract::<f64>()
+                    .map_err(|e| Errors::PlErr(e.to_string()))?,
+                row_vals[5]
+                    .try_extract::<f64>()
+                    .map_err(|e| Errors::PlErr(e.to_string()))?,
+                row_vals[6]
+                    .try_extract::<f64>()
+                    .map_err(|e| Errors::PlErr(e.to_string()))?,
+            ))
         })
         .collect();
+    let ins_tups = ins_tups?;
     let mut query_builder: QueryBuilder<Postgres> = QueryBuilder::new(&insert_table);
     query_builder.push_values(ins_tups, |mut b, rs| {
         b.push_bind(rs.0)
@@ -144,5 +161,9 @@ pub async fn df_to_db(df: &DataFrame) {
 
     let query: sqlx::query::Query<'_, Postgres, sqlx::postgres::PgArguments> =
         query_builder.build();
-    let _ = query.execute(&pool).await.unwrap();
+    let _ = query
+        .execute(&pool)
+        .await
+        .map_err(|e| Errors::DBexecute(e.to_string()))?;
+    Ok(())
 }

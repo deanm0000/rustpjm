@@ -14,7 +14,7 @@ pub struct PJMEndPoint {
     pub columns: &'static str,
     pub exprs: Vec<Expr>,
     pub next_time: Duration,
-    expected: Arc<dyn Fn(DateTime<Utc>) -> u32 + Send + Sync>,
+    expected: Arc<dyn Fn(DateTime<Utc>) -> Result<u32, Errors> + Send + Sync>,
     pub default_duration: Option<Duration>,
     pub unique_by: Vec<&'static str>,
     pub sort_by: Vec<&'static str>,
@@ -22,26 +22,34 @@ pub struct PJMEndPoint {
 }
 
 impl PJMEndPoint {
-    pub fn expected(&self, in_dt: DateTime<Utc>) -> u32 {
+    pub fn expected(&self, in_dt: DateTime<Utc>) -> Result<u32, Errors> {
         let func = Arc::clone(&self.expected);
         func(in_dt)
     }
     pub fn is_sub_daily(&self) -> bool {
         self.next_time < Duration::days(1)
     }
-    pub fn is_first_last(&self, begin_dt: DateTime<Utc>, next_time: DateTime<Utc>) -> (bool, bool) {
+    pub fn is_first_last(
+        &self,
+        begin_dt: DateTime<Utc>,
+        next_time: DateTime<Utc>,
+    ) -> Result<(bool, bool), Errors> {
         let in_ny = begin_dt.with_timezone(&New_York);
         let trunc_day = in_ny.date_naive();
         let ny_day = New_York
-            .from_local_datetime(&trunc_day.and_hms_opt(0, 0, 0).unwrap())
+            .from_local_datetime(
+                &trunc_day
+                    .and_hms_opt(0, 0, 0)
+                    .ok_or_else(|| Errors::DtParse("hms_opt".to_string()))?,
+            )
             .single()
-            .expect("can't convert dt in first/last");
+            .ok_or_else(|| Errors::DtParse("single".to_string()))?;
         let is_first = in_ny == ny_day;
 
         let next_trunc_day = next_time.date_naive();
 
         let is_last = trunc_day < next_trunc_day;
-        (is_first, is_last)
+        Ok((is_first, is_last))
     }
 }
 
@@ -96,15 +104,15 @@ fn lmp_col(lmp: &'static str) -> Expr {
     col(lmp).cast(DataType::Float64).alias(new_name)
 }
 fn da_hrl_lmps() -> PJMEndPoint {
-    fn expected(in_dt: DateTime<Utc>) -> u32 {
+    fn expected(in_dt: DateTime<Utc>) -> Result<u32, Errors> {
         let expected_dt = in_dt + Duration::hours(-14);
         let now = Utc::now();
         let diff = expected_dt - now;
         let secs = diff.num_seconds();
         if secs > 0 {
-            secs as u32
+            Ok(secs as u32)
         } else {
-            60u32
+            Ok(60u32)
         }
     }
     PJMEndPoint {
@@ -122,7 +130,7 @@ fn da_hrl_lmps() -> PJMEndPoint {
 }
 
 fn rt_fivemin_hrl_lmps() -> PJMEndPoint {
-    fn expected(in_dt: DateTime<Utc>) -> u32 {
+    fn expected(in_dt: DateTime<Utc>) -> Result<u32, Errors> {
         let in_ny = in_dt.with_timezone(&New_York);
         let next_day = in_ny.date_naive() + Duration::days(1);
         let weekday = next_day.weekday();
@@ -132,17 +140,21 @@ fn rt_fivemin_hrl_lmps() -> PJMEndPoint {
             _ => next_day,
         };
         let expected_dt = New_York
-            .from_local_datetime(&next_day.and_hms_opt(10, 0, 0).unwrap())
+            .from_local_datetime(
+                &next_day
+                    .and_hms_opt(10, 0, 0)
+                    .ok_or_else(|| Errors::DtParse("hms_opt".to_string()))?,
+            )
             .single()
-            .expect("can't convert dt")
+            .ok_or_else(|| Errors::DtParse("single".to_string()))?
             .with_timezone(&Utc);
         let now = Utc::now();
         let diff = expected_dt - now;
         let secs = diff.num_seconds();
         if secs > 0 {
-            secs as u32
+            Ok(secs as u32)
         } else {
-            0u32
+            Ok(0u32)
         }
     }
     PJMEndPoint {
@@ -160,16 +172,16 @@ fn rt_fivemin_hrl_lmps() -> PJMEndPoint {
 }
 
 fn rt_unverified_fivemin_lmps() -> PJMEndPoint {
-    fn expected(in_dt: DateTime<Utc>) -> u32 {
+    fn expected(in_dt: DateTime<Utc>) -> Result<u32, Errors> {
         let expected_dt = in_dt + Duration::minutes(5);
         let now = Utc::now();
         let diff = expected_dt - now;
         let secs = diff.num_seconds();
 
         if secs > 0 {
-            secs as u32
+            Ok(secs as u32)
         } else {
-            0u32
+            Ok(0u32)
         }
     }
     PJMEndPoint {

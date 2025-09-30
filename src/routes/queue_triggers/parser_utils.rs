@@ -49,7 +49,7 @@ pub fn check_len(lfs_len: &usize, results_len: &usize) -> Result<(), Errors> {
 //         .clone()
 //         .select(vec![unique_expr])
 //         .collect()
-//         .cust_unwrap()?;
+//         .map_err(|e| Errors::PlErr(e.to_string()))?;
 
 //     let pl = match pl.column("pricedate") {
 //         Ok(column) => column,
@@ -75,12 +75,12 @@ pub fn make_df(
 ) -> Result<DataFrame, Errors> {
     let df = JsonReader::new(cur)
         .finish()
-        .cust_unwrap()?
+        .map_err(|e| Errors::PlErr(e.to_string()))?
         .lazy()
         .select(&pjm_end_point.exprs)
         .sort(vec!["utcbegin"], SortMultipleOptions::new())
         .collect()
-        .cust_unwrap()?;
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
     Ok(df)
 }
 pub fn bool_str(a_bool: bool) -> &'static str {
@@ -131,7 +131,7 @@ pub fn make_parameters(
 
 pub async fn pjm_pre_fetch(
     req_client: Arc<Client>,
-    url: String,
+    url: &str,
     begin_dt: DateTime<Utc>,
     pjm_end_point: PJMEndPoint,
 ) -> Result<(Response, u32), Errors> {
@@ -142,7 +142,7 @@ pub async fn pjm_pre_fetch(
         .query(&params)
         .send()
         .await
-        .cust_unwrap()?;
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
 
     if !response.status().is_success() {
         eprintln!("resp bad {}", response.status());
@@ -167,14 +167,12 @@ pub async fn pjm_pre_fetch(
         Some(total_rows) => total_rows,
         None => return Err(Errors::PJMNoTotalRowsHeader),
     };
-
-    let total_rows = match total_rows.to_str() {
-        Ok(tot_rows) => match tot_rows.parse::<u32>() {
-            Ok(tot_rows) => tot_rows,
-            Err(_) => return Err(Errors::PJMNoTotalRowsHeader),
-        },
-        Err(_) => return Err(Errors::PJMNoTotalRowsHeader),
-    };
+    let total_rows = total_rows
+        .to_str()
+        .map_err(|_| Errors::PJMNoTotalRowsHeader)?;
+    let total_rows = total_rows
+        .parse::<u32>()
+        .map_err(|_| Errors::PJMNoTotalRowsHeader)?;
     Ok((response, total_rows))
 }
 
@@ -193,32 +191,20 @@ pub fn get_next_time(lf: &LazyFrame, next_time: Duration) -> Result<DateTime<Utc
         .clone()
         .select(vec![col("utcbegin").max() + lit(next_time)])
         .collect()
-        .cust_unwrap()?;
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
+    let column = df
+        .column("utcbegin")
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
 
-    let column = match df.column("utcbegin") {
-        Ok(column) => column,
-        Err(e) => {
-            eprintln!("{}", e);
-            return Err(Errors::PlErr);
-        }
-    };
-    let dt = match column.datetime() {
-        Ok(logical) => logical,
-        Err(e) => {
-            eprintln!("{}", e);
-            return Err(Errors::PlErr);
-        }
-    };
-    let next_time_ts = match dt.get(0) {
-        Some(ts) => ts,
-        None => {
-            eprintln!("no next time ts");
-            return Err(Errors::PlErr);
-        }
-    };
+    let dt = column
+        .datetime()
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
+    let next_time_ts = dt.get(0).ok_or_else(|| Errors::PlErr("datetime".into()))?;
 
     let (sec, rem) = next_time_ts.div_rem(&MILLION);
-    Ok(DateTime::from_timestamp(sec, (rem * 1000) as u32).expect("couldn't get chrono from int64"))
+
+    Ok(DateTime::from_timestamp(sec, (rem * 1000) as u32)
+        .ok_or_else(|| Errors::DtParse("couldn't get datetime from i64".to_string()))?)
 }
 
 pub async fn pjm_fetch(
@@ -235,7 +221,7 @@ pub async fn pjm_fetch(
         .query(&params)
         .send()
         .await
-        .cust_unwrap()?;
+        .map_err(|_| Errors::ResponseErr)?;
 
     if !response.status().is_success() {
         eprintln!(
@@ -310,7 +296,7 @@ pub fn handle_bytes(
 //         .left_join(df.clone().lazy(), col("utcbegin"), col("utcbegin"))
 //         .filter(col("have").is_null())
 //         .collect()
-//         .cust_unwrap()?;
+//         .map_err(|e| Errors::PlErr(e.to_string()))?;
 
 //     match join_check.shape().0 {
 //         0 => Ok(true),
@@ -349,7 +335,7 @@ pub fn handle_bytes(
 //             .alias("good_end"),
 //         ])
 //         .collect()
-//         .cust_unwrap()?;
+//         .map_err(|e| Errors::PlErr(e.to_string()))?;
 
 //     let good_begin = match df.column("good_begin") {
 //         Ok(column) => column,

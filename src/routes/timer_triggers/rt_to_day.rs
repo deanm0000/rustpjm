@@ -9,13 +9,13 @@ use object_store::path::Path;
 use object_store::ObjectStore;
 use polars::prelude::ScanArgsParquet;
 use polars::prelude::*;
+use polars_parquet::parquet::metadata::RowGroupMetadata;
 use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use tokio::task;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-
 pub async fn parse_rt_to_da_starter(
     rt_to_da: RtToDa,
     state: Arc<AppState>,
@@ -61,36 +61,45 @@ async fn parse_rt_to_da_wrapper(rt_to_da: RtToDa, state: Arc<AppState>) {
     };
 }
 
-async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
+async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) -> Result<(), Errors> {
     eprintln!("in parse rt_to_da func");
     let endpoint = &rt_to_da.endpoint;
     let dir = format!("abfs://pjm/apidata/{}/_input/*.parquet", endpoint);
     let pricedate_str = rt_to_da.date.as_str();
-    let pricedate = NaiveDate::parse_from_str(pricedate_str, "%Y-%m-%d").unwrap();
+    let pricedate = NaiveDate::parse_from_str(pricedate_str, "%Y-%m-%d")
+        .map_err(|e| Errors::DtParse(e.to_string()))?;
 
     eprintln!("scanning files in {}", &dir);
     let args = ScanArgsParquet {
         include_file_paths: Some("file_path".into()),
         ..Default::default()
     };
-    let new_df = tokio::task::spawn_blocking(move || {
-        LazyFrame::scan_parquet(dir, args)
-            .unwrap()
-            .filter(col("pricedate").eq(lit(pricedate)))
-            .collect()
-            .unwrap()
-    })
-    .await
-    .unwrap();
+    let new_df = LazyFrame::scan_parquet(dir, args)
+        .map_err(|e| Errors::PlErr(e.to_string()))?
+        .filter(col("pricedate").eq(lit(pricedate)))
+        .collect()
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
+
     if new_df.shape().0 == 0 {
-        return;
+        return Ok(());
     }
     eprintln!("making files column");
-    let files = new_df.column("file_path").unwrap();
-    let files = files.str().unwrap().unique().unwrap();
-    let new_df = new_df.drop("file_path").unwrap();
+    let files = new_df
+        .column("file_path")
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
+    let files = files
+        .str()
+        .map_err(|e| Errors::PlErr(e.to_string()))?
+        .unique()
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
+    let new_df = new_df
+        .drop("file_path")
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
     eprintln!("have files ca with {} unique files", files.len());
-    let new_dfs = new_df.clone().partition_by(vec!["node_id"], true).unwrap();
+    let new_dfs = new_df
+        .clone()
+        .partition_by(vec!["node_id"], true)
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
     eprintln!("have {} df partitions", &new_dfs.len());
     let schema = new_df.schema();
     eprintln!("pricedate is {}", &pricedate_str);
@@ -103,15 +112,12 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
         endpoint.as_str(),
         pricedate_str
     );
-    let mut existing_nodes = get_nodes(existing_file.as_str()).await;
+    let mut existing_nodes = get_nodes(existing_file.as_str()).await?;
     let existing_lf = match existing_nodes.len() {
         0 => DataFrame::empty_with_schema(schema).lazy(),
         _ => {
-            let lf = tokio::task::spawn_blocking(move || {
-                LazyFrame::scan_parquet(existing_file.clone(), ScanArgsParquet::default()).unwrap()
-            })
-            .await
-            .unwrap();
+            let lf = LazyFrame::scan_parquet(existing_file.clone(), ScanArgsParquet::default())
+                .map_err(|e| Errors::PlErr(e.to_string()))?;
             eprintln!(
                 "have {} existing nodes and existing lf",
                 &existing_nodes.len()
@@ -123,11 +129,13 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
     let write_to_path = Path::from(write_to_str.clone());
     let object_store = Arc::clone(&state.object_store);
     let cloud_writer = CloudWriter::new_with_object_store(object_store, write_to_path.clone())
-        .expect("cloud writer");
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
 
     let pq_writer =
         ParquetWriter::new(cloud_writer).with_compression(ParquetCompression::Zstd(None));
-    let mut batched_writer = pq_writer.batched(schema).unwrap();
+    let mut batched_writer = pq_writer
+        .batched(schema)
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
 
     let union_args = UnionArgs {
         parallel: false,
@@ -136,7 +144,13 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
     };
     eprintln!("starting to write new file to {}", &write_to_str);
     for (i, df) in new_dfs.into_iter().enumerate() {
-        let node_id = df.column("node_id").unwrap().u64().unwrap().get(0).unwrap();
+        let node_id = df
+            .column("node_id")
+            .map_err(|e| Errors::PlErr(e.to_string()))?
+            .u64()
+            .map_err(|e| Errors::PlErr(e.to_string()))?
+            .get(0)
+            .ok_or_else(|| Errors::PlErr("get".to_string()))?;
         if i % 100 == 0 || i <= 10 {
             eprintln!(
                 "working on node_id {} with {} rows; i={}",
@@ -148,21 +162,17 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
         }
 
         let existing_lf_clone = existing_lf.clone();
-        let filt = tokio::task::spawn_blocking(move || {
-            existing_lf_clone
-                .filter(col("node_id").eq(lit(node_id)))
-                .collect()
-                .unwrap()
-        })
-        .await
-        .unwrap();
+        let filt = existing_lf_clone
+            .filter(col("node_id").eq(lit(node_id)))
+            .collect()
+            .map_err(|e| Errors::PlErr(e.to_string()))?;
         if i % 100 == 0 || i <= 10 {
             eprintln!("have {} existing rows", filt.shape().0);
         }
         let lfs = vec![filt.lazy(), df.lazy()]; // keep this order for the concat keep last strategy
 
         let new_rg = concat(lfs, union_args)
-            .unwrap()
+            .map_err(|e| Errors::PlErr(e.to_string()))?
             .unique(
                 Some(vec!["utcbegin".to_string(), "node_id".to_string()]),
                 UniqueKeepStrategy::Last, //Keep last so that new data updates old data.
@@ -172,11 +182,13 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
                 SortMultipleOptions::new().with_order_descending(false),
             )
             .collect()
-            .unwrap();
+            .map_err(|e| Errors::PlErr(e.to_string()))?;
         if i % 100 == 0 || i <= 10 {
             eprintln!("about to write batch of {} rows", new_rg.shape().0);
         }
-        batched_writer.write_batch(&new_rg).unwrap();
+        batched_writer
+            .write_batch(&new_rg)
+            .map_err(|e| Errors::PlErr(e.to_string()))?;
         existing_nodes.remove(&node_id);
     }
     eprintln!(
@@ -186,26 +198,26 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
     for node_id in existing_nodes {
         let existing_lf_clone = existing_lf.clone();
 
-        let new_rg = tokio::task::spawn_blocking(move || {
-            existing_lf_clone
-                .clone()
-                .filter(col("node_id").eq(lit(node_id)))
-                .unique(
-                    Some(vec!["utcbegin".to_string(), "node_id".to_string()]),
-                    UniqueKeepStrategy::Any,
-                )
-                .sort(
-                    vec!["utcbegin"],
-                    SortMultipleOptions::new().with_order_descending(false),
-                )
-                .collect()
-                .unwrap()
-        })
-        .await
-        .unwrap();
-        batched_writer.write_batch(&new_rg).unwrap();
+        let new_rg = existing_lf_clone
+            .clone()
+            .filter(col("node_id").eq(lit(node_id)))
+            .unique(
+                Some(vec!["utcbegin".to_string(), "node_id".to_string()]),
+                UniqueKeepStrategy::Any,
+            )
+            .sort(
+                vec!["utcbegin"],
+                SortMultipleOptions::new().with_order_descending(false),
+            )
+            .collect()
+            .map_err(|e| Errors::PlErr(e.to_string()))?;
+        batched_writer
+            .write_batch(&new_rg)
+            .map_err(|e| Errors::PlErr(e.to_string()))?;
     }
-    batched_writer.finish().expect("finish");
+    batched_writer
+        .finish()
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
     eprintln!("done writing parquet file");
     let object_store = Arc::clone(&state.object_store);
 
@@ -216,23 +228,26 @@ async fn parse_rt_to_da(rt_to_da: RtToDa, state: &Arc<AppState>) {
         10,
     )
     .await
-    .unwrap();
+    .map_err(|e| Errors::PlErr(e.to_string()))?;
     eprintln!("copied file from processing");
     let object_store = Arc::clone(&state.object_store);
-    del_retry(object_store, write_to_path, 10).await.unwrap();
+    del_retry(object_store, write_to_path, 10).await?;
     eprintln!("deleted file from processing");
     // let del_paths:Vec<Path> = rt_to_da
     let futures: Vec<JoinHandle<Result<(), Errors>>> = files
         .clone()
         .into_iter()
-        .map(|file| {
-            let file_path = Path::from(file.unwrap());
-            task::spawn(del_retry(Arc::clone(&state.object_store), file_path, 10))
+        .filter_map(|file| {
+            file.map(|file| {
+                let file_path = Path::from(file);
+                task::spawn(del_retry(Arc::clone(&state.object_store), file_path, 10))
+            })
         })
         .collect();
 
     let _results: Vec<Result<Result<(), Errors>, task::JoinError>> = join_all(futures).await;
     eprintln!("deleted {} incoming files", files.len());
+    Ok(())
 }
 async fn copy_retry(
     object_store: Arc<dyn ObjectStore>,
@@ -285,35 +300,53 @@ async fn del_retry(
         del_fails += 1;
     }
 }
-async fn get_nodes(file_path: &str) -> HashSet<u64> {
+async fn get_nodes(file_path: &str) -> Result<HashSet<u64>, Errors> {
     let mut nodes: HashSet<u64> = HashSet::new();
     let async_reader = ParquetAsyncReader::from_uri(file_path, None, None).await;
     if async_reader.is_err() {
-        return nodes;
+        return Ok(nodes);
     };
-    let mut async_reader = async_reader.unwrap();
+    let mut async_reader = async_reader.map_err(|e| Errors::PlErr(e.to_string()))?;
     let metadata = async_reader.get_metadata().await;
     if metadata.is_err() {
-        return nodes;
+        return Ok(nodes);
     };
-    let metadata = metadata.unwrap();
+    let metadata = metadata.map_err(|e| Errors::PlErr(e.to_string()))?;
     let meta_cloned = Arc::clone(metadata);
     let row_groups = &meta_cloned.row_groups;
 
-    row_groups.iter().for_each(|rg| {
-        let columns = rg.columns_under_root_iter("node_id").unwrap();
-        columns.into_iter().for_each(|col| {
-            let c = col.metadata();
-            let stats = c.statistics.clone().unwrap();
-            let min = stats.min_value.clone().unwrap();
-            let max = stats.max_value.clone().unwrap();
-            if min != max {
-                panic!("min not max")
-            }
-            let array: [u8; 8] = min.try_into().expect("Vec<u8> is not 8 bytes long.");
-            let node = u64::from_le_bytes(array);
-            nodes.insert(node);
-        });
-    });
-    nodes
+    row_groups
+        .iter()
+        .try_for_each(|rg: &RowGroupMetadata| -> Result<(), Errors> {
+            let columns = rg
+                .columns_under_root_iter("node_id")
+                .ok_or_else(|| Errors::PlErr("columns_under_root_iter".to_string()))?;
+            columns.into_iter().try_for_each(
+                |col: &polars_parquet::read::ColumnChunkMetadata| -> Result<(), Errors> {
+                    let c = col.metadata();
+                    let stats = c
+                        .statistics
+                        .clone()
+                        .ok_or_else(|| Errors::PlErr("no stats".to_string()))?;
+                    let min = stats
+                        .min_value
+                        .clone()
+                        .ok_or_else(|| Errors::PlErr("no stats".to_string()))?;
+                    let max = stats
+                        .max_value
+                        .clone()
+                        .ok_or_else(|| Errors::PlErr("no stats".to_string()))?;
+                    if min != max {
+                        return Err(Errors::PlErr("min!=max".to_string()));
+                    }
+
+                    let array: [u8; 8] = min.try_into().map_err(|_| Errors::BytesErr)?;
+                    let node = u64::from_le_bytes(array);
+                    nodes.insert(node);
+                    Ok(())
+                },
+            )?;
+            Ok(())
+        })?;
+    Ok(nodes)
 }

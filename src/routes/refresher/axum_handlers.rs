@@ -1,3 +1,4 @@
+use crate::errors::Errors;
 use crate::pjmendpoints::PJMEndPoint;
 use crate::structs::{az_functions::*, cust::*};
 use crate::utils::*;
@@ -45,12 +46,16 @@ impl Queues {
             Queues::RtUnverf => String::from("apidata/rt_unverified_fivemin_lmps/_input/"),
         }
     }
-    async fn check_queue(&self) -> usize {
-        let queue_client = make_queue_client(self.trigger().as_str());
-        let meta = queue_client.get_metadata().into_future().await.unwrap();
-        meta.approximate_messages_count
+    async fn check_queue(&self) -> Result<usize, Errors> {
+        let queue_client = make_queue_client(self.trigger().as_str())?;
+        let meta = queue_client
+            .get_metadata()
+            .into_future()
+            .await
+            .map_err(|_| Errors::QTMeta)?;
+        Ok(meta.approximate_messages_count)
     }
-    async fn make_next_queue(self, state: Arc<AppState>) {
+    async fn make_next_queue(self, state: Arc<AppState>) -> Result<(), Errors> {
         eprintln!("make next {} queue", self);
         let state = Arc::clone(&state);
         let obj_store = Arc::clone(&state.object_store);
@@ -66,14 +71,15 @@ impl Queues {
         }
         eprintln!("have {} files", files.len());
         match files.len() {
-            0 => self.get_lazy_frame_last_time().await,
-            _ => self.parse_file_list_last_time(&files).await,
+            0 => Ok(self.get_lazy_frame_last_time().await?),
+            _ => Ok(self.parse_file_list_last_time(&files).await?),
         }
     }
-    async fn get_lazy_frame_last_time(self) {
-        eprintln!("ignoring get_lazy_frame_last_time {}", self.trigger())
+    async fn get_lazy_frame_last_time(self) -> Result<(), Errors> {
+        eprintln!("ignoring get_lazy_frame_last_time {}", self.trigger());
+        Ok(())
     }
-    async fn parse_file_list_last_time(self, files: &[obPath]) {
+    async fn parse_file_list_last_time(self, files: &[obPath]) -> Result<(), Errors> {
         let last = files
             .iter()
             .filter_map(|path| {
@@ -82,20 +88,23 @@ impl Queues {
                     .and_then(|datetime_str| datetime_str.parse::<DateTime<Utc>>().ok())
             })
             .max();
-        if last.is_none() {
-            eprintln!("{} refresher couldn't parse datetimes {}", self, files[0]);
-            return self.get_lazy_frame_last_time().await;
+        match last {
+            Some(last) => {
+                let end_point = PJMEndPoint::from(&self);
+                let next_time = last + end_point.next_time;
+                let msg = InMsg {
+                    begin_time: next_time,
+                    pjm_end_point: end_point,
+                    queue_next: true,
+                    last_retry: None,
+                };
+                Ok(put_to_queue(&msg, 0).await?)
+            }
+            None => {
+                eprintln!("{} refresher couldn't parse datetimes {}", self, files[0]);
+                Ok(self.get_lazy_frame_last_time().await?)
+            }
         }
-        let last = last.unwrap();
-        let end_point = PJMEndPoint::from(&self);
-        let next_time = last + end_point.next_time;
-        let msg = InMsg {
-            begin_time: next_time,
-            pjm_end_point: end_point,
-            queue_next: true,
-            last_retry: None,
-        };
-        put_to_queue(&msg, 0).await.unwrap();
     }
     async fn peak_multiple_jobs(self) {
         eprintln!("ignoring peak_multiple_jobs {}", self.trigger())
@@ -106,7 +115,7 @@ pub async fn refresher(
     // _queue: Path<String>,
     State(state): State<Arc<AppState>>,
     // _result: Result<Json<FuncRequest>, axum::extract::rejection::JsonRejection>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, Errors> {
     let final_resp = OutResponse {
         Outputs: None,
         Logs: None,
@@ -115,9 +124,9 @@ pub async fn refresher(
 
     let mut did_nothing = true;
     for q in Queues::iter() {
-        match q.check_queue().await {
+        match q.check_queue().await? {
             0 => {
-                q.make_next_queue(Arc::clone(&state)).await;
+                q.make_next_queue(Arc::clone(&state)).await?;
                 did_nothing = false;
             }
             1 => {}
@@ -130,5 +139,5 @@ pub async fn refresher(
     if did_nothing {
         eprintln!("refresher did nothing");
     };
-    (StatusCode::OK, Json(final_resp))
+    Ok((StatusCode::OK, Json(final_resp)))
 }

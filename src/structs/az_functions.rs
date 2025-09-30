@@ -30,19 +30,19 @@ pub struct FuncRequest {
     pub Metadata: MetaData,
 }
 
-#[allow(non_snake_case)]
-#[derive(Deserialize, Serialize, Debug)]
-pub struct Timer {
-    pub Schedule: Schedule,
-    pub ScheduleStatus: Option<String>,
-    pub IsPastDue: bool,
-}
+// #[allow(non_snake_case)]
+// #[derive(Deserialize, Serialize, Debug)]
+// pub struct Timer {
+//     pub Schedule: Schedule,
+//     pub ScheduleStatus: Option<String>,
+//     pub IsPastDue: bool,
+// }
 
-#[allow(non_snake_case)]
-#[derive(Deserialize, Serialize, Debug)]
-pub struct Schedule {
-    pub AdjustForDST: bool,
-}
+// #[allow(non_snake_case)]
+// #[derive(Deserialize, Serialize, Debug)]
+// pub struct Schedule {
+//     pub AdjustForDST: bool,
+// }
 
 #[allow(non_snake_case)]
 #[derive(Deserialize, Serialize, Debug)]

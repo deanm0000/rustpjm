@@ -1,10 +1,16 @@
-use polars::prelude::*;
-use reqwest::Response;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
 use std::error::Error;
 use std::fmt;
+
+use crate::structs::az_functions::OutResponse;
 #[derive(Debug, Clone)]
 pub enum Errors {
-    MissingEnvVar,
+    Reqwest(String),
+    ObjStore(String),
+    Axum(String),
+    MissingEnvVar(String),
     NoPJMEndPoint,
     HashMapkey,
     PJMTooMany,
@@ -13,44 +19,35 @@ pub enum Errors {
     PJM0Rows,
     QTJson,
     QTinMsg,
-    QTToString,
+    QTToString(String),
+    QTMeta,
     DFMakedf,
     BytesErr,
     ResponseErr,
-    PlErr,
+    PlErr(String),
     FailedDeserialization,
     DateTimeParsing,
-    Panic,
+    Panic(String),
+    MakeHeader(String),
+    DtParse(String),
+    DBCantConnect(String),
+    DBexecute(String),
 }
-
+impl Error for Errors {}
 impl fmt::Display for Errors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Unknown error")
+        write!(f, "{:?}", self)
     }
 }
 
-impl Error for Errors {}
+impl IntoResponse for Errors {
+    fn into_response(self) -> axum::response::Response {
+        let final_resp = OutResponse {
+            Outputs: None,
+            Logs: Some(self.to_string()),
+            ReturnValue: None,
+        };
 
-macro_rules! impl_into_result {
-    ($traitname:ident, $old_error_type:ty, $new_error_type:expr, $result_type:ty) => {
-        pub trait $traitname {
-            fn cust_unwrap(self) -> Result<$result_type, Errors>;
-        }
-
-        impl $traitname for Result<$result_type, $old_error_type> {
-            fn cust_unwrap(self) -> Result<$result_type, Errors> {
-                match self {
-                    Ok(value) => Ok(value),
-                    Err(e) => {
-                        eprintln!("{}", e.to_string());
-                        return Err($new_error_type);
-                    }
-                }
-            }
-        }
-    };
+        (StatusCode::FAILED_DEPENDENCY, Json(final_resp)).into_response()
+    }
 }
-
-impl_into_result!(DFres, PolarsError, Errors::PlErr, DataFrame);
-impl_into_result!(LFres, PolarsError, Errors::PlErr, LazyFrame);
-impl_into_result!(ReqResp, reqwest::Error, Errors::ResponseErr, Response);

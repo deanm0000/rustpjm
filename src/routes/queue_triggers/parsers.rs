@@ -8,7 +8,7 @@ use polars_io::cloud::CloudWriter;
 use std::cmp;
 use tokio::task::{self, JoinHandle};
 use uuid::Uuid;
-
+const MAX_ROWS: u32 = 50_000;
 pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>, Errors> {
     let pjm_end_point = &in_msg.pjm_end_point;
     let begin_dt = in_msg.begin_time;
@@ -16,7 +16,7 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
     let url = format!("{}{}", BASE_URL, &pjm_end_point.url_suffix);
     let (init_resp, total_rows) = pjm_pre_fetch(
         Arc::clone(&state.req_client),
-        url.clone(),
+        url.as_str(),
         begin_dt,
         pjm_end_point.clone(),
     )
@@ -25,14 +25,14 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
         return Err(Errors::PJM0Rows);
     }
     //TODO: Don't get more than (maybe 10) pages and instead make new queues at new time intervals
-    let pages = total_rows.div_ceil(50_000);
+    let pages = total_rows.div_ceil(MAX_ROWS);
     let mut new_starts: Vec<u32> = match pages {
         0..=1 => vec![],
         _ => vec![0; cmp::max(0, pages as usize - 1)],
     };
 
     for i in 1..pages {
-        new_starts[i as usize - 1] = i * 50_000 + 1;
+        new_starts[i as usize - 1] = i * MAX_ROWS + 1;
     }
 
     let mut futures = vec![task::spawn(pjm_first_fetch(
@@ -65,7 +65,7 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
     check_len(&lfs.len(), results_len)?;
 
     let lf = concat(lfs, CONCAT_ARGS)
-        .cust_unwrap()?
+        .map_err(|e| Errors::PlErr(e.to_string()))?
         .filter(col("pricedate").eq(col("pricedate").min()));
     // The filter is to keep each file representing no more than 1 day for the rt to da process, it'd be more efficient
     // to change the parameters such that it doesn't download multiple days but that should be a rare occurence
@@ -77,12 +77,10 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
         Uuid::new_v4()
     );
     let objstore = Arc::clone(&state.object_store);
-    let mut df = tokio::task::spawn_blocking(|| lf.collect().expect("final df collect"))
-        .await
-        .expect("err final df");
 
+    let mut df = lf.collect().map_err(|e| Errors::PlErr(e.to_string()))?;
     let now = Utc::now();
-    df_to_db(&df).await;
+    df_to_db(&df).await?;
     let after = Utc::now();
     let secs = after - now;
     eprintln!(
@@ -92,11 +90,11 @@ pub async fn pjm(in_msg: &InMsg, state: &Arc<AppState>) -> Result<DateTime<Utc>,
         secs.num_seconds()
     );
     let now = Utc::now();
-    let mut cloud_writer =
-        CloudWriter::new_with_object_store(objstore, save_path.into()).expect("cloud writer");
+    let mut cloud_writer = CloudWriter::new_with_object_store(objstore, save_path.into())
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
     ParquetWriter::new(&mut cloud_writer)
         .finish(&mut df)
-        .expect("Couldn't write file");
+        .map_err(|e| Errors::PlErr(e.to_string()))?;
     let after = Utc::now();
     let secs = after - now;
     eprintln!(
